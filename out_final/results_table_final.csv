@@ -1,0 +1,5 @@
+Metric,Decentralized (mean+/-std),Cloud-Assisted (mean+/-std)
+Throughput Q [veh/h],210.6 +/- 4.2,581.4 +/- 37.1
+Average waiting Wbar [s],262.4 +/- 6.8,166.7 +/- 13.4
+P95 waiting W95 [s],504.4 +/- 12.7,384.3 +/- 21.5
+Average travel time Tt [s],327.4 +/- 8.4,266.6 +/- 12.4

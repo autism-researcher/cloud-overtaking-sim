@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Cloud-Assisted Obstacle-Overtaking Simulator"
+abstract: >-
+  Microscopic traffic simulator (IDM-based) for a one-lane two-way road with a
+  localized obstacle, comparing a centralized cloud-based slot-reservation
+  coordinator against a decentralized one-lane-bridge baseline. Reproduces all
+  figures and tables of the associated AVEC'26 / IJAE paper.
+type: software
+authors:
+  - family-names: Hossain
+    given-names: Mohammad Belayet
+    affiliation: "Dr. Hussein El-Sayyed Center for Scientific Research, University of Prince Mugrin"
+  - family-names: Tayan
+    given-names: Omar
+    affiliation: "Dr. Hussein El-Sayyed Center for Scientific Research, University of Prince Mugrin"
+  - family-names: Kamal
+    given-names: Md Abdus Samad
+    affiliation: "Gunma University"
+license: MIT
+version: "1.0.0"
+date-released: "2026-06-15"
+keywords:
+  - connected and automated vehicles
+  - intelligent driver model
+  - cloud-based coordination
+  - obstacle overtaking
+  - microscopic traffic simulation
+# After minting a Zenodo DOI, fill it in here and in the paper:
+# doi: 10.5281/zenodo.XXXXXXX
