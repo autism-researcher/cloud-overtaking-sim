@@ -1,12 +1,4 @@
-# Python
 __pycache__/
 *.pyc
-*.pyo
-
-# logs / scratch
-*.log
-sim_run.py
-
-# OS
-.DS_Store
-Thumbs.db
+*.bak
+.ipynb_checkpoints/

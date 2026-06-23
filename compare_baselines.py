@@ -91,7 +91,7 @@ class Cfg:
 # ----------------------------------------------------------------------------
 class Veh:
     __slots__ = ("vid","d","length","v0i","s","v","t_in","t_out","wait",
-                 "reserved","t_s","D","done","occupying","stops","stopped")
+                 "reserved","t_s","D","done","occupying")
     def __init__(self, vid, d, length, v0i, t_in):
         self.vid = vid
         self.d   = d              # +1 (L->R) or -1 (R->L) -- both use progress s
@@ -107,8 +107,6 @@ class Veh:
         self.D     = None         # estimated crossing duration
         self.done  = False
         self.occupying = False    # currently inside the shared section?
-        self.stops = 0            # number of full stops on the approach
-        self.stopped = False      # hysteresis flag for stop counting
 
 
 # ----------------------------------------------------------------------------
@@ -171,10 +169,8 @@ def simulate(lam, policy, record_tracks=False, rng=None):
     T_total = Cfg.T_warm + Cfg.T_sim
     n_steps = int(T_total/dt)
 
-    # Poisson arrivals: next headway per direction.
-    # `lam` may be a scalar (symmetric) or a dict {+1: ..., -1: ...} (asymmetric).
-    lam_d = lam if isinstance(lam, dict) else {+1: lam, -1: lam}
-    next_arr = {+1: rng.exponential(1.0/lam_d[+1]), -1: rng.exponential(1.0/lam_d[-1])}
+    # Poisson arrivals: next headway per direction
+    next_arr = {+1: rng.exponential(1.0/lam), -1: rng.exponential(1.0/lam)}
     active = {+1: [], -1: []}
     finished = []
     tracks = {}                     # vid -> (list_t, list_s, dir)
@@ -191,12 +187,7 @@ def simulate(lam, policy, record_tracks=False, rng=None):
     for k in range(n_steps):
         t = k*dt
 
-        # ---- spawn arrivals (safe insertion behind the queue tail) ---------
-        # A new vehicle is placed at the origin, or, once the queue has reached
-        # the origin, a minimum gap s0 behind the rear-most vehicle (the approach
-        # extends upstream as a physical feeder queue) and at a speed no greater
-        # than that vehicle's. This prevents the non-physical injection of a
-        # vehicle onto already-occupied pavement under heavy demand.
+        # ---- spawn arrivals (safe insertion behind the queue tail) ----
         for d in (+1, -1):
             while t >= next_arr[d]:
                 length = rng.uniform(Cfg.len_min, Cfg.len_max)
@@ -211,7 +202,7 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                 active[d].append(veh)
                 if record_tracks:
                     tracks[veh.vid] = ([], [], d)
-                next_arr[d] += rng.exponential(1.0/lam_d[d])
+                next_arr[d] += rng.exponential(1.0/lam)
 
         # ---- recompute section occupancy ----
         occ_dirs = set()
@@ -305,17 +296,10 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                 v.v = max(0.0, v.v + a*dt)
                 s_prev = v.s
                 v.s += v.v*dt
-                if leader is not None:                 # hard no-overlap guard
+                if leader is not None:
                     _rear = leader.s - leader.length
                     if v.s > _rear:
                         v.s = _rear; v.v = min(v.v, leader.v)
-
-                # count full stops on the approach (with hysteresis)
-                if v.s < Cfg.S_exit:
-                    if v.v < 0.3 and not v.stopped:
-                        v.stops += 1; v.stopped = True
-                    elif v.v > 1.0:
-                        v.stopped = False
 
                 # baseline: release the bridge claim once the holder has cleared
                 if policy == "base" and v.vid == claim_vid:
@@ -350,7 +334,6 @@ def simulate(lam, policy, record_tracks=False, rng=None):
             if v.t_out is not None and Cfg.T_warm <= v.t_out <= T_total]
     waits = np.array([v.wait for v in meas]) if meas else np.array([0.0])
     travels = np.array([v.t_out - v.t_in for v in meas]) if meas else np.array([0.0])
-    stops = np.array([v.stops for v in meas]) if meas else np.array([0.0])
     Q = len(meas)/Cfg.T_sim*3600.0
     res = dict(
         lam=lam, policy=policy, n=len(meas),
@@ -358,7 +341,6 @@ def simulate(lam, policy, record_tracks=False, rng=None):
         wait_mean=float(np.mean(waits)),
         wait_p95=float(np.percentile(waits, 95)),
         travel_mean=float(np.mean(travels)),
-        stops_mean=float(np.mean(stops)),
         waits=waits,
     )
     if record_tracks:
@@ -366,115 +348,78 @@ def simulate(lam, policy, record_tracks=False, rng=None):
     return res
 
 
-# ----------------------------------------------------------------------------
-# Plotting helpers
-# ----------------------------------------------------------------------------
-def _spacetime(tracks, title, fname, t0=Cfg.T_warm, t1=Cfg.T_warm+180):
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    for vid,(ts,ss,d) in tracks.items():
-        if not ts: continue
-        ts = np.array(ts); ss = np.array(ss)
-        m = (ts >= t0) & (ts <= t1)
-        if m.sum() < 2: continue
-        c = "#1f5fbf" if d == +1 else "#c0392b"
-        ax.plot(ts[m], ss[m], color=c, lw=0.7, alpha=0.85)
-    ax.axhspan(Cfg.S_entry, Cfg.S_exit, color="0.75", alpha=0.6, zorder=0)
-    ax.axhline(Cfg.S_entry, color="k", ls="--", lw=0.6)
-    ax.set_xlim(t0, t1); ax.set_ylim(0, Cfg.L)
-    ax.set_xlabel("time [s]"); ax.set_ylabel("position along corridor [m]")
-    ax.set_title(title, fontsize=10)
-    from matplotlib.lines import Line2D
-    ax.legend([Line2D([0],[0],color="#1f5fbf"),Line2D([0],[0],color="#c0392b")],
-              ["direction L->R","direction R->L"], fontsize=8, loc="lower right")
-    fig.tight_layout()
-    for ext in ("pdf","png"):
-        fig.savefig(f"out/{fname}.{ext}", dpi=160)
-    plt.close(fig)
 
+# ----------------------------------------------------------------------------
+# Three-way baseline comparison  (base vs fixed-time signal vs cloud)
+# ----------------------------------------------------------------------------
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+POL   = ["base", "signal", "cloud"]
+LAB   = {"base":"Decentralized bridge", "signal":"Fixed-time signal", "cloud":"Cloud-assisted (proposed)"}
+COL   = {"base":"#c0392b", "signal":"#e08e0b", "cloud":"#1f5fbf"}
+MK    = {"base":"o", "signal":"^", "cloud":"s"}
+
+def run_cell(lam, pol, seeds):
+    Q=[];W=[];P=[];T=[]
+    for s in seeds:
+        r=simulate(lam, pol, rng=np.random.default_rng(s))
+        Q.append(r["Q"]);W.append(r["wait_mean"]);P.append(r["wait_p95"]);T.append(r["travel_mean"])
+    return dict(Q=float(np.mean(Q)),Qsd=float(np.std(Q)),
+                W=float(np.mean(W)),P95=float(np.mean(P)),Tt=float(np.mean(T)))
 
 def main():
-    os.makedirs("out", exist_ok=True)
-    lam_rep = 0.30   # representative arrival rate [veh/s/direction]
+    os.makedirs("out_baseline", exist_ok=True)
+    lam_rep = 0.30
+    rep_seeds   = [1,2,3,4,5]
+    sweep_seeds = [1,2]
+    lams = [0.05,0.10,0.15,0.20,0.25,0.30,0.40,0.50]
 
-    print("Running representative scenario (lambda = %.2f veh/s/dir)..." % lam_rep)
-    r_cloud = simulate(lam_rep, "cloud", record_tracks=True,
-                       rng=np.random.default_rng(Cfg.seed))
-    r_base  = simulate(lam_rep, "base",  record_tracks=True,
-                       rng=np.random.default_rng(Cfg.seed))
+    # ---- representative-point table (averaged over seeds) ----
+    rep = {p: run_cell(lam_rep, p, rep_seeds) for p in POL}
+    with open("out_baseline/results_table_3way.csv","w",newline="") as f:
+        w=csv.writer(f); w.writerow(["Metric"]+[LAB[p] for p in POL])
+        w.writerow(["Throughput Q [veh/h]"]      +[f"{rep[p]['Q']:.0f}"  for p in POL])
+        w.writerow(["Average waiting Wbar [s]"]  +[f"{rep[p]['W']:.1f}"  for p in POL])
+        w.writerow(["P95 waiting W95 [s]"]       +[f"{rep[p]['P95']:.1f}"for p in POL])
+        w.writerow(["Average travel time Tt [s]"]+[f"{rep[p]['Tt']:.1f}" for p in POL])
 
-    _spacetime(r_cloud["tracks"], "Proposed cloud-assisted coordination",
-               "fig_spacetime_cloud")
-    _spacetime(r_base["tracks"],  "Decentralized baseline",
-               "fig_spacetime_base")
-
-    # waiting-time CDF
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    for r,lab,c in ((r_base,"Decentralized","#c0392b"),
-                    (r_cloud,"Cloud-assisted","#1f5fbf")):
-        w = np.sort(r["waits"]); y = np.arange(1,len(w)+1)/len(w)
-        ax.plot(w, y, color=c, lw=1.8, label=lab)
-    ax.set_xlabel("per-vehicle waiting time [s]"); ax.set_ylabel("empirical CDF")
-    ax.set_ylim(0,1.02); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-    fig.tight_layout()
-    for ext in ("pdf","png"): fig.savefig(f"out/fig_waiting_cdf.{ext}", dpi=160)
-    plt.close(fig)
-
-    # density sweep
-    lams = [0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,0.50]
-    sweep = {"cloud":[], "base":[]}
-    print("Density sweep...")
+    # ---- density sweep ----
+    sweep={p:[] for p in POL}
     for lam in lams:
-        for pol in ("cloud","base"):
-            r = simulate(lam, pol, rng=np.random.default_rng(Cfg.seed))
-            sweep[pol].append(r)
-            print(f"  lam={lam:.2f} {pol:5s}  Q={r['Q']:6.0f}  "
-                  f"Wmean={r['wait_mean']:5.1f}  P95={r['wait_p95']:5.1f}  "
-                  f"Tt={r['travel_mean']:5.1f}")
+        for p in POL:
+            sweep[p].append(run_cell(lam,p,sweep_seeds))
+    with open("out_baseline/sweep_3way.csv","w",newline="") as f:
+        w=csv.writer(f); w.writerow(["lambda","policy","Q_vehph","wait_mean_s","wait_p95_s","travel_mean_s"])
+        for p in POL:
+            for lam,c in zip(lams,sweep[p]):
+                w.writerow([lam,p,f"{c['Q']:.1f}",f"{c['W']:.2f}",f"{c['P95']:.2f}",f"{c['Tt']:.2f}"])
 
-    fig, ax = plt.subplots(figsize=(5.2,3.6))
-    ax.plot(lams,[r["Q"] for r in sweep["base"]], "o-", color="#c0392b", label="Decentralized")
-    ax.plot(lams,[r["Q"] for r in sweep["cloud"]],"s-", color="#1f5fbf", label="Cloud-assisted")
-    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir]"); ax.set_ylabel("throughput Q [veh/h]")
-    ax.legend(fontsize=9); ax.grid(alpha=0.3); fig.tight_layout()
-    for ext in ("pdf","png"): fig.savefig(f"out/fig_sweep_throughput.{ext}", dpi=160)
+    # ---- figure: throughput vs demand ----
+    fig,ax=plt.subplots(figsize=(5.4,3.7))
+    for p in POL:
+        ax.plot(lams,[c["Q"] for c in sweep[p]],MK[p]+"-",color=COL[p],label=LAB[p],lw=1.8,ms=5)
+    ax.set_xlabel(r"arrival rate $\lambda$ [veh/s/dir]");ax.set_ylabel("throughput Q [veh/h]")
+    ax.legend(fontsize=8);ax.grid(alpha=0.3);fig.tight_layout()
+    for e in ("pdf","png"): fig.savefig(f"out_baseline/fig_throughput_3way.{e}",dpi=160)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(5.2,3.6))
-    ax.plot(lams,[r["wait_mean"] for r in sweep["base"]], "o-", color="#c0392b", label="Decentralized (mean)")
-    ax.plot(lams,[r["wait_mean"] for r in sweep["cloud"]],"s-", color="#1f5fbf", label="Cloud-assisted (mean)")
-    ax.plot(lams,[r["wait_p95"]  for r in sweep["base"]], "o--", color="#c0392b", alpha=0.6, label="Decentralized (P95)")
-    ax.plot(lams,[r["wait_p95"]  for r in sweep["cloud"]],"s--", color="#1f5fbf", alpha=0.6, label="Cloud-assisted (P95)")
-    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir]"); ax.set_ylabel("waiting time [s]")
-    ax.legend(fontsize=7); ax.grid(alpha=0.3); fig.tight_layout()
-    for ext in ("pdf","png"): fig.savefig(f"out/fig_sweep_waiting.{ext}", dpi=160)
+    # ---- figure: mean waiting vs demand ----
+    fig,ax=plt.subplots(figsize=(5.4,3.7))
+    for p in POL:
+        ax.plot(lams,[c["W"] for c in sweep[p]],MK[p]+"-",color=COL[p],label=LAB[p],lw=1.8,ms=5)
+    ax.set_xlabel(r"arrival rate $\lambda$ [veh/s/dir]");ax.set_ylabel("average waiting time [s]")
+    ax.legend(fontsize=8);ax.grid(alpha=0.3);fig.tight_layout()
+    for e in ("pdf","png"): fig.savefig(f"out_baseline/fig_waiting_3way.{e}",dpi=160)
     plt.close(fig)
 
-    # CSVs
-    with open("out/sweep.csv","w",newline="") as f:
-        w = csv.writer(f); w.writerow(["lambda","policy","n","Q_vehph","wait_mean_s","wait_p95_s","travel_mean_s"])
-        for pol in ("base","cloud"):
-            for r in sweep[pol]:
-                w.writerow([r["lam"],pol,r["n"],f"{r['Q']:.1f}",f"{r['wait_mean']:.2f}",
-                            f"{r['wait_p95']:.2f}",f"{r['travel_mean']:.2f}"])
-
-    cb = next(r for r in sweep["base"]  if abs(r["lam"]-lam_rep)<1e-9)
-    cc = next(r for r in sweep["cloud"] if abs(r["lam"]-lam_rep)<1e-9)
-    with open("out/results_table.csv","w",newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["Metric","Decentralized","Cloud-Assisted"])
-        w.writerow(["Throughput Q [veh/h]", f"{cb['Q']:.0f}", f"{cc['Q']:.0f}"])
-        w.writerow(["Average waiting Wbar [s]", f"{cb['wait_mean']:.1f}", f"{cc['wait_mean']:.1f}"])
-        w.writerow(["P95 waiting W95 [s]", f"{cb['wait_p95']:.1f}", f"{cc['wait_p95']:.1f}"])
-        w.writerow(["Average travel time Tt [s]", f"{cb['travel_mean']:.1f}", f"{cc['travel_mean']:.1f}"])
-
-    print("\n=== Representative scenario (lambda = %.2f) ===" % lam_rep)
-    print(f"{'Metric':28s}{'Decentralized':>15s}{'Cloud-Assisted':>16s}")
-    print(f"{'Throughput Q [veh/h]':28s}{cb['Q']:>15.0f}{cc['Q']:>16.0f}")
-    print(f"{'Avg waiting Wbar [s]':28s}{cb['wait_mean']:>15.1f}{cc['wait_mean']:>16.1f}")
-    print(f"{'P95 waiting W95 [s]':28s}{cb['wait_p95']:>15.1f}{cc['wait_p95']:>16.1f}")
-    print(f"{'Avg travel time Tt [s]':28s}{cb['travel_mean']:>15.1f}{cc['travel_mean']:>16.1f}")
-    print("\nFigures and CSVs written to ./out/")
-
+    print(f"{'Metric':26s}"+"".join(f"{LAB[p]:>26s}" for p in POL))
+    print(f"{'Throughput Q [veh/h]':26s}"+"".join(f"{rep[p]['Q']:>26.0f}" for p in POL))
+    print(f"{'Avg waiting Wbar [s]':26s}"+"".join(f"{rep[p]['W']:>26.1f}" for p in POL))
+    print(f"{'P95 waiting W95 [s]':26s}"+"".join(f"{rep[p]['P95']:>26.1f}" for p in POL))
+    print(f"{'Avg travel time Tt [s]':26s}"+"".join(f"{rep[p]['Tt']:>26.1f}" for p in POL))
+    print("\nWrote out_baseline/  (table + sweep csv + 2 figures)")
 
 if __name__ == "__main__":
     main()
