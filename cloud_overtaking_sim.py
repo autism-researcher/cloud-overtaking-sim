@@ -352,7 +352,16 @@ def simulate(lam, policy, record_tracks=False, rng=None):
     travels = np.array([v.t_out - v.t_in for v in meas]) if meas else np.array([0.0])
     stops = np.array([v.stops for v in meas]) if meas else np.array([0.0])
     Q = len(meas)/Cfg.T_sim*3600.0
+    # per-direction metrics (for fairness analysis)
+    meas_pos = [v for v in meas if v.d == +1]
+    meas_neg = [v for v in meas if v.d == -1]
+    wpos = float(np.mean([v.wait for v in meas_pos])) if meas_pos else 0.0
+    wneg = float(np.mean([v.wait for v in meas_neg])) if meas_neg else 0.0
+    Qpos = len(meas_pos)/Cfg.T_sim*3600.0
+    Qneg = len(meas_neg)/Cfg.T_sim*3600.0
     res = dict(
+        wait_pos=wpos, wait_neg=wneg, Q_pos=Qpos, Q_neg=Qneg,
+        n_pos=len(meas_pos), n_neg=len(meas_neg),
         lam=lam, policy=policy, n=len(meas),
         Q=Q,
         wait_mean=float(np.mean(waits)),
