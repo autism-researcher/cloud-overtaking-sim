@@ -5,18 +5,18 @@ abstract: >-
   Microscopic traffic simulator (IDM-based) for a one-lane two-way road with a
   localized obstacle, comparing a centralized cloud-based slot-reservation
   coordinator against a decentralized one-lane-bridge baseline. Reproduces all
-  figures and tables of the associated AVEC'26 / IJAE paper.
+  figures and tables of the associated IEEE Access paper.
 type: software
 authors:
   - family-names: Hossain
     given-names: Mohammad Belayet
-    affiliation: "Dr. Hussein El-Sayyed Center for Scientific Research, University of Prince Mugrin"
-  - family-names: Tayan
-    given-names: Omar
-    affiliation: "Dr. Hussein El-Sayyed Center for Scientific Research, University of Prince Mugrin"
+    affiliation: "Dr. Hussein ElSayyed Center for Scientific Research (HRC), University of Prince Mugrin"
   - family-names: Kamal
     given-names: Md Abdus Samad
     affiliation: "Gunma University"
+  - family-names: Tayan
+    given-names: Omar
+    affiliation: "Dr. Hussein ElSayyed Center for Scientific Research (HRC), University of Prince Mugrin"
 license: MIT
 version: "1.1.0"
 date-released: "2026-06-15"

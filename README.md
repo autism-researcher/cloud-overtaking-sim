@@ -1,7 +1,7 @@
 # Cloud-Assisted Obstacle-Overtaking Simulator
 
 Microscopic traffic simulator that generates all the quantitative results
-(figures + tables) for the AVEC'26 / IJAE papers.
+(figures + tables) for the associated IEEE Access paper.
 
 ## What it models
 A one-lane two-way road with a localized obstacle. The obstacle blocks one
