@@ -17,7 +17,7 @@ are compared (in `het_sim.py`, the heterogeneous-fleet production simulator):
 | `base`   | Decentralized one-lane-bridge rule: one vehicle at a time, right-of-way alternates between directions. A vehicle *claims* the section when granted, so opposing vehicles cannot enter during its approach (no head-on deadlock). |
 | `signal` | Idealized fixed-time work-zone signal: green alternates on a fixed cycle (`sig_green`) with an all-red clearance (`sig_clear`); vehicles stop at red, no en-route speed shaping. |
 | `actuated` | Idealized vehicle-actuated work-zone signal: green extends while the served direction has demand (up to `act_gmax`) and gaps out when its queue clears (min green `act_gmin`), same all-red clearance. Modelled with **no startup lost time** — a deliberately strong, best-case roadside comparator. |
-| `cloud`  | **Proposed.** Centralized slot reservation + IDM-compliant target speed (vehicles are slowed *en route* to arrive exactly when their slot opens, avoiding full stops) + same-direction batching + a `max_batch` fairness cap so neither direction starves. |
+| `cloud`  | **Proposed.** Centralized slot reservation + IDM-compliant target speed (vehicles are slowed *en route* to arrive exactly when their slot opens, avoiding full stops) + same-direction batching with a hard cap (`batch_cap = 10` consecutive cars, then a forced gap yielding to any waiting opposing traffic — "10 cars, gap, 10 cars") so neither direction starves. |
 
 **Safety interlock.** All policies enforce strict directional mutual exclusion via a hard
 section-ownership interlock: a vehicle may cross the section entry only when no opposing

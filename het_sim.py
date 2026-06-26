@@ -72,7 +72,10 @@ class Cfg:
     g_same     = 1.2         # headway between same-direction vehicles in section [s]
     v_min      = 5.0
     v_max      = 25.0
-    max_batch  = 12.0        # max batch duration per direction (fairness cap) [s]
+    max_batch  = 12.0        # max batch duration per direction (scheduling cap) [s]
+    batch_cap  = 10          # hard cap: max consecutive same-direction crossings before
+                             # the coordinator yields to a waiting opposing batch ("10
+                             # cars, then a gap, then 10 cars")
 
     # Fixed-time signal baseline (portable work-zone signal / flagger)
     sig_green  = 15.0        # green duration per direction [s]
@@ -212,6 +215,8 @@ def simulate(lam, policy, record_tracks=False, rng=None):
     sec_claim = 0                   # direction that physically owns the shared section
                                     # (hard mutual-exclusion interlock for signal/
                                     # actuated/cloud; 0 = section free)
+    batch_dir = 0                   # direction of the current same-direction run (cloud)
+    batch_count = 0                 # consecutive crossings by batch_dir since last switch
 
     # actuated-signal state
     act_dir = +1                    # direction currently holding (or last held) green
@@ -395,7 +400,13 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                         slot_open = (v.t_s is None) or (t >= v.t_s + Cfg.comm_delay)
                         if Cfg.comm_loss > 0.0 and rng.random() < Cfg.comm_loss:
                             slot_open = False
-                        allow_enter = slot_open and (not opp_in)
+                        # hard batch cap: after batch_cap consecutive same-direction
+                        # crossings, yield to the opposing direction if it has a vehicle
+                        # waiting (gives "10 cars, then a gap, then 10 cars").
+                        batch_block = (d == batch_dir and batch_count >= Cfg.batch_cap
+                                       and any(Cfg.S_prec <= vv.s < Cfg.S_entry
+                                               for vv in active[-d]))
+                        allow_enter = slot_open and (not opp_in) and (not batch_block)
 
                 # virtual stop-line leader at S_entry if not allowed to enter
                 if (not allow_enter) and v.s < Cfg.S_entry:
@@ -422,6 +433,10 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                 # vehicle is parked just behind the line and never claims.
                 if allow_enter and s_prev < Cfg.S_entry <= v.s:
                     sec_claim = d
+                    if d == batch_dir:
+                        batch_count += 1
+                    else:
+                        batch_dir = d; batch_count = 1
 
                 # count full stops on the approach (with hysteresis)
                 if v.s < Cfg.S_exit:
