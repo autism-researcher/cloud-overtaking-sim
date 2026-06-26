@@ -77,6 +77,12 @@ class Cfg:
     # Fixed-time signal baseline (portable work-zone signal / flagger)
     sig_green  = 15.0        # green duration per direction [s]
     sig_clear  = 6.0         # all-red clearance between greens [s]
+    # Vehicle-actuated signal baseline (demand-responsive work-zone signal)
+    act_gmin   = 5.0         # minimum green per direction [s]
+    act_gmax   = 20.0        # maximum green per direction [s]
+    # Communication-imperfection model (cloud target-speed command staleness)
+    comm_delay = 0.0         # latency before a vehicle's first command applies [s]
+    comm_loss  = 0.0         # per-step probability the target-speed update is dropped
 
     # Simulation
     dt         = 0.2         # time step [s]
@@ -92,7 +98,7 @@ class Cfg:
 class Veh:
     __slots__ = ("vid","d","length","v0i","s","v","t_in","t_out","wait",
                  "reserved","t_s","D","done","occupying","stops","stopped",
-                 "Th","am","bc","vsec")
+                 "Th","am","bc","vsec","cmd_v0")
     def __init__(self, vid, d, length, v0i, t_in, Th=None, am=None, bc=None, vsec=None):
         self.vid = vid
         self.d   = d              # +1 (L->R) or -1 (R->L) -- both use progress s
@@ -114,6 +120,7 @@ class Veh:
         self.am = am if am is not None else Cfg.a_max
         self.bc = bc if bc is not None else Cfg.b_comf
         self.vsec = vsec if vsec is not None else Cfg.v_sec
+        self.cmd_v0 = None        # last cloud target-speed command actually received
 
 
 # ----------------------------------------------------------------------------
@@ -163,8 +170,17 @@ class Cloud:
 # ----------------------------------------------------------------------------
 # Simulation core
 # ----------------------------------------------------------------------------
+SAFETY_VIOL = [0]   # counts steps where both directions occupy the shared section
+
 def in_section(v):
     return Cfg.S_entry <= v.s <= Cfg.S_exit + v.length
+
+def blocks_opposing(v):
+    """A vehicle blocks an opposing entry while it is anywhere in the shared
+    section OR within the opposing safety clearance (g_opp) of the exit, so that
+    an entering vehicle is guaranteed real spatial separation from it. This is the
+    physical interlock that enforces strict directional mutual exclusion."""
+    return Cfg.S_entry <= v.s <= (Cfg.S_exit + v.length + Cfg.g_opp*Cfg.v_sec)
 
 def simulate(lam, policy, record_tracks=False, rng=None):
     """Run one simulation.
@@ -193,6 +209,16 @@ def simulate(lam, policy, record_tracks=False, rng=None):
     last_served = -1                # for alternation
     claim = 0                       # direction that currently owns the bridge
     claim_vid = None                # the vehicle holding the claim
+    sec_claim = 0                   # direction that physically owns the shared section
+                                    # (hard mutual-exclusion interlock for signal/
+                                    # actuated/cloud; 0 = section free)
+
+    # actuated-signal state
+    act_dir = +1                    # direction currently holding (or last held) green
+    act_t0 = 0.0                    # time the current green began
+    act_clearing = False            # True during all-red clearance
+    act_clear_t0 = 0.0              # time the clearance began
+    act_green = 0                   # green direction this step (0 = all-red)
 
     for k in range(n_steps):
         t = k*dt
@@ -229,7 +255,13 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                 active[d].append(veh)
                 if record_tracks:
                     tracks[veh.vid] = ([], [], d)
-                next_arr[d] += rng.exponential(1.0/lam_d[d])
+                if getattr(Cfg, "bursty", False):
+                    import math as _m
+                    _mult = 1.0 + 0.9*_m.sin(2*_m.pi*next_arr[d]/getattr(Cfg, "burst_period", 180.0))
+                    _lt = max(lam_d[d]*_mult, 0.02*lam_d[d])
+                    next_arr[d] += rng.exponential(1.0/_lt)
+                else:
+                    next_arr[d] += rng.exponential(1.0/lam_d[d])
 
         # ---- recompute section occupancy ----
         occ_dirs = set()
@@ -240,6 +272,41 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                 if v.occupying:
                     occ_dirs.add(d); sec_count += 1
         sec_owner = next(iter(occ_dirs)) if len(occ_dirs) == 1 else (0 if not occ_dirs else 99)
+        if len(occ_dirs) > 1:
+            SAFETY_VIOL[0] += 1
+
+        # ---- actuated-signal phase (computed once per step) ----
+        if policy == "actuated":
+            def _demand(dd):
+                return any(Cfg.S_prec <= vv.s < Cfg.S_entry for vv in active[dd])
+            if act_clearing:
+                act_green = 0
+                if t - act_clear_t0 >= Cfg.sig_clear:
+                    act_clearing = False
+                    act_dir = -act_dir          # hand green to the opposing approach
+                    act_t0 = t
+            else:
+                elapsed = t - act_t0
+                dem_cur = _demand(act_dir)
+                dem_opp = _demand(-act_dir)
+                end_phase = False
+                if elapsed >= Cfg.act_gmin:
+                    if elapsed >= Cfg.act_gmax and dem_opp:
+                        end_phase = True        # max-out: yield to a waiting opponent
+                    elif (not dem_cur) and dem_opp:
+                        end_phase = True        # gap-out: current queue cleared, opp waits
+                if end_phase:
+                    act_clearing = True; act_clear_t0 = t; act_green = 0
+                else:
+                    act_green = act_dir
+
+        # ---- physical section-ownership interlock (hard mutual exclusion) ----
+        # Release the section once its owning direction has fully cleared the
+        # section and the opposing safety clearance; if the section is free but
+        # still physically occupied (e.g. just after release), reclaim it for the
+        # occupying direction. This guarantees only one direction is ever inside.
+        if sec_claim and not any(blocks_opposing(vv) for vv in active[sec_claim]):
+            sec_claim = 0
 
         # ---- per-direction control ----
         for d in (+1, -1):
@@ -259,10 +326,15 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                 if policy == "cloud" and v.reserved and v.s < Cfg.S_entry and v.t_s is not None:
                     dist = Cfg.S_entry - v.s
                     rem = v.t_s - t
-                    if rem > 0.1:
-                        v0_eff = float(np.clip(dist/rem, Cfg.v_min, Cfg.v_max))
-                    else:
-                        v0_eff = v.v0i
+                    new_cmd = float(np.clip(dist/rem, Cfg.v_min, Cfg.v_max)) if rem > 0.1 else v.v0i
+                    # command staleness under latency + packet loss: the first command
+                    # applies only after the link delay, and each update may be dropped;
+                    # otherwise the vehicle holds its last received target speed.
+                    cmd_ready = (t >= v.t_in + Cfg.comm_delay)
+                    dropped = (Cfg.comm_loss > 0.0 and rng.random() < Cfg.comm_loss)
+                    if cmd_ready and not dropped:
+                        v.cmd_v0 = new_cmd
+                    v0_eff = v.cmd_v0 if v.cmd_v0 is not None else v.v0i
                 if Cfg.S_entry - 5 <= v.s <= Cfg.S_exit:
                     v0_eff = min(v0_eff, Cfg.v_sec)
 
@@ -306,11 +378,24 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                             green_dir = -1
                         else:
                             green_dir = 0
-                        opp_in = (len(occ_dirs) == 1 and (sec_owner == -d))
+                        opp_in = (sec_claim not in (0, d))
                         allow_enter = (green_dir == d) and (not opp_in)
+                    elif policy == "actuated":
+                        # Vehicle-actuated signal: green extends while the served
+                        # direction has demand (up to a max green) and gaps out to
+                        # the opposing approach when its queue clears, with the same
+                        # all-red clearance. Vehicles STOP at red (no speed shaping).
+                        opp_in = (sec_claim not in (0, d))
+                        allow_enter = (act_green == d) and (not opp_in)
                     else:  # cloud
-                        opp_in = (len(occ_dirs) == 1 and (sec_owner == -d))
-                        allow_enter = (t >= (v.t_s or t)) and (not opp_in)
+                        opp_in = (sec_claim not in (0, d))
+                        # the "you may enter" grant is delayed by the link latency and
+                        # may be dropped (held a step) by packet loss; safety is still
+                        # enforced locally by the interlock above, independent of the link.
+                        slot_open = (v.t_s is None) or (t >= v.t_s + Cfg.comm_delay)
+                        if Cfg.comm_loss > 0.0 and rng.random() < Cfg.comm_loss:
+                            slot_open = False
+                        allow_enter = slot_open and (not opp_in)
 
                 # virtual stop-line leader at S_entry if not allowed to enter
                 if (not allow_enter) and v.s < Cfg.S_entry:
@@ -327,6 +412,16 @@ def simulate(lam, policy, record_tracks=False, rng=None):
                     _rear = leader.s - leader.length
                     if v.s > _rear:
                         v.s = _rear; v.v = min(v.v, leader.v)
+                # hard stop-line: a gated vehicle physically cannot run the red into
+                # the shared section (prevents IDM overshoot past the entry line).
+                if (not allow_enter) and s_prev < Cfg.S_entry and v.s >= Cfg.S_entry:
+                    v.s = Cfg.S_entry - 0.1; v.v = 0.0
+                # claim the section the instant a PERMITTED vehicle crosses the entry
+                # line, so the opposing direction (processed later this step, or in
+                # later steps) is held out until this direction fully clears. A blocked
+                # vehicle is parked just behind the line and never claims.
+                if allow_enter and s_prev < Cfg.S_entry <= v.s:
+                    sec_claim = d
 
                 # count full stops on the approach (with hysteresis)
                 if v.s < Cfg.S_exit:
@@ -392,116 +487,3 @@ def simulate(lam, policy, record_tracks=False, rng=None):
         res["tracks"] = tracks
     return res
 
-
-# ----------------------------------------------------------------------------
-# Plotting helpers
-# ----------------------------------------------------------------------------
-def _spacetime(tracks, title, fname, t0=Cfg.T_warm, t1=Cfg.T_warm+180):
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    for vid,(ts,ss,d) in tracks.items():
-        if not ts: continue
-        ts = np.array(ts); ss = np.array(ss)
-        m = (ts >= t0) & (ts <= t1)
-        if m.sum() < 2: continue
-        c = "#1f5fbf" if d == +1 else "#c0392b"
-        ax.plot(ts[m], ss[m], color=c, lw=0.7, alpha=0.85)
-    ax.axhspan(Cfg.S_entry, Cfg.S_exit, color="0.75", alpha=0.6, zorder=0)
-    ax.axhline(Cfg.S_entry, color="k", ls="--", lw=0.6)
-    ax.set_xlim(t0, t1); ax.set_ylim(0, Cfg.L)
-    ax.set_xlabel("time [s]"); ax.set_ylabel("position along corridor [m]")
-    ax.set_title(title, fontsize=10)
-    from matplotlib.lines import Line2D
-    ax.legend([Line2D([0],[0],color="#1f5fbf"),Line2D([0],[0],color="#c0392b")],
-              ["direction L->R","direction R->L"], fontsize=8, loc="lower right")
-    fig.tight_layout()
-    for ext in ("pdf","png"):
-        fig.savefig(f"out/{fname}.{ext}", dpi=160)
-    plt.close(fig)
-
-
-def main():
-    os.makedirs("out", exist_ok=True)
-    lam_rep = 0.30   # representative arrival rate [veh/s/direction]
-
-    print("Running representative scenario (lambda = %.2f veh/s/dir)..." % lam_rep)
-    r_cloud = simulate(lam_rep, "cloud", record_tracks=True,
-                       rng=np.random.default_rng(Cfg.seed))
-    r_base  = simulate(lam_rep, "base",  record_tracks=True,
-                       rng=np.random.default_rng(Cfg.seed))
-
-    _spacetime(r_cloud["tracks"], "Proposed cloud-assisted coordination",
-               "fig_spacetime_cloud")
-    _spacetime(r_base["tracks"],  "Decentralized baseline",
-               "fig_spacetime_base")
-
-    # waiting-time CDF
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    for r,lab,c in ((r_base,"Decentralized","#c0392b"),
-                    (r_cloud,"Cloud-assisted","#1f5fbf")):
-        w = np.sort(r["waits"]); y = np.arange(1,len(w)+1)/len(w)
-        ax.plot(w, y, color=c, lw=1.8, label=lab)
-    ax.set_xlabel("per-vehicle waiting time [s]"); ax.set_ylabel("empirical CDF")
-    ax.set_ylim(0,1.02); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-    fig.tight_layout()
-    for ext in ("pdf","png"): fig.savefig(f"out/fig_waiting_cdf.{ext}", dpi=160)
-    plt.close(fig)
-
-    # density sweep
-    lams = [0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,0.50]
-    sweep = {"cloud":[], "base":[]}
-    print("Density sweep...")
-    for lam in lams:
-        for pol in ("cloud","base"):
-            r = simulate(lam, pol, rng=np.random.default_rng(Cfg.seed))
-            sweep[pol].append(r)
-            print(f"  lam={lam:.2f} {pol:5s}  Q={r['Q']:6.0f}  "
-                  f"Wmean={r['wait_mean']:5.1f}  P95={r['wait_p95']:5.1f}  "
-                  f"Tt={r['travel_mean']:5.1f}")
-
-    fig, ax = plt.subplots(figsize=(5.2,3.6))
-    ax.plot(lams,[r["Q"] for r in sweep["base"]], "o-", color="#c0392b", label="Decentralized")
-    ax.plot(lams,[r["Q"] for r in sweep["cloud"]],"s-", color="#1f5fbf", label="Cloud-assisted")
-    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir]"); ax.set_ylabel("throughput Q [veh/h]")
-    ax.legend(fontsize=9); ax.grid(alpha=0.3); fig.tight_layout()
-    for ext in ("pdf","png"): fig.savefig(f"out/fig_sweep_throughput.{ext}", dpi=160)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(5.2,3.6))
-    ax.plot(lams,[r["wait_mean"] for r in sweep["base"]], "o-", color="#c0392b", label="Decentralized (mean)")
-    ax.plot(lams,[r["wait_mean"] for r in sweep["cloud"]],"s-", color="#1f5fbf", label="Cloud-assisted (mean)")
-    ax.plot(lams,[r["wait_p95"]  for r in sweep["base"]], "o--", color="#c0392b", alpha=0.6, label="Decentralized (P95)")
-    ax.plot(lams,[r["wait_p95"]  for r in sweep["cloud"]],"s--", color="#1f5fbf", alpha=0.6, label="Cloud-assisted (P95)")
-    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir]"); ax.set_ylabel("waiting time [s]")
-    ax.legend(fontsize=7); ax.grid(alpha=0.3); fig.tight_layout()
-    for ext in ("pdf","png"): fig.savefig(f"out/fig_sweep_waiting.{ext}", dpi=160)
-    plt.close(fig)
-
-    # CSVs
-    with open("out/sweep.csv","w",newline="") as f:
-        w = csv.writer(f); w.writerow(["lambda","policy","n","Q_vehph","wait_mean_s","wait_p95_s","travel_mean_s"])
-        for pol in ("base","cloud"):
-            for r in sweep[pol]:
-                w.writerow([r["lam"],pol,r["n"],f"{r['Q']:.1f}",f"{r['wait_mean']:.2f}",
-                            f"{r['wait_p95']:.2f}",f"{r['travel_mean']:.2f}"])
-
-    cb = next(r for r in sweep["base"]  if abs(r["lam"]-lam_rep)<1e-9)
-    cc = next(r for r in sweep["cloud"] if abs(r["lam"]-lam_rep)<1e-9)
-    with open("out/results_table.csv","w",newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["Metric","Decentralized","Cloud-Assisted"])
-        w.writerow(["Throughput Q [veh/h]", f"{cb['Q']:.0f}", f"{cc['Q']:.0f}"])
-        w.writerow(["Average waiting Wbar [s]", f"{cb['wait_mean']:.1f}", f"{cc['wait_mean']:.1f}"])
-        w.writerow(["P95 waiting W95 [s]", f"{cb['wait_p95']:.1f}", f"{cc['wait_p95']:.1f}"])
-        w.writerow(["Average travel time Tt [s]", f"{cb['travel_mean']:.1f}", f"{cc['travel_mean']:.1f}"])
-
-    print("\n=== Representative scenario (lambda = %.2f) ===" % lam_rep)
-    print(f"{'Metric':28s}{'Decentralized':>15s}{'Cloud-Assisted':>16s}")
-    print(f"{'Throughput Q [veh/h]':28s}{cb['Q']:>15.0f}{cc['Q']:>16.0f}")
-    print(f"{'Avg waiting Wbar [s]':28s}{cb['wait_mean']:>15.1f}{cc['wait_mean']:>16.1f}")
-    print(f"{'P95 waiting W95 [s]':28s}{cb['wait_p95']:>15.1f}{cc['wait_p95']:>16.1f}")
-    print(f"{'Avg travel time Tt [s]':28s}{cb['travel_mean']:>15.1f}{cc['travel_mean']:>16.1f}")
-    print("\nFigures and CSVs written to ./out/")
-
-
-if __name__ == "__main__":
-    main()
