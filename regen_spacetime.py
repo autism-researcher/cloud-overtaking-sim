@@ -16,7 +16,7 @@ C_CLOUD, C_BASE = "#1f5fbf", "#c0392b"
 
 
 def spacetime(policy, title, fname, t0, t1):
-    r = simulate(0.30, policy, record_tracks=True,
+    r = simulate(0.10, policy, record_tracks=True,
                  rng=np.random.default_rng(SEED))
     fig, ax = plt.subplots(figsize=(5.4, 3.7))
     for _, (ts, ss, d) in r["tracks"].items():

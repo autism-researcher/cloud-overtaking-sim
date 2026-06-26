@@ -36,8 +36,8 @@ from cloud_overtaking_sim import Cfg, idm_accel, Cloud, in_section
 
 # ---- production configuration (match the main study) ----
 Cfg.dt = 0.1; Cfg.T_warm = 60.0; Cfg.T_sim = 600.0
-LAM      = 0.30
-N_SEEDS  = 10
+LAM      = 0.10
+N_SEEDS  = 5
 BASE_SEED = 1
 LATENCIES = [0.0, 0.05, 0.10, 0.20, 0.50]   # s
 LOSSES    = [0.0, 0.05, 0.10, 0.20]          # fraction

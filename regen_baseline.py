@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from cloud_overtaking_sim import Cfg, simulate
 
 Cfg.dt = 0.1; Cfg.T_warm = 60.0; Cfg.T_sim = 600.0
-SEEDS = [1, 2, 3]
+SEEDS = [1,2,3,4,5,6,7,8,9,10]
 LAMS_ALL = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50]
 POLS = ["base", "signal", "cloud"]
 LAB = {"base": "Decentralized bridge", "signal": "Fixed-time signal",
@@ -76,27 +76,29 @@ def agg(metric_idx):
 
 def plot():
     # throughput
-    fig, ax = plt.subplots(figsize=(5.0, 3.4))
+    fig, ax = plt.subplots(figsize=(5.6, 3.9))
     data = agg(0)
     for p in POLS:
         x, m, e = data[p]
-        ax.errorbar(x, m, yerr=e, fmt=MRK[p], color=COL[p], capsize=3, lw=1.4, ms=5, label=LAB[p])
-    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir] (symmetric)")
-    ax.set_ylabel("throughput $Q$ [veh/h]")
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+        ax.errorbar(x, m, yerr=e, fmt=MRK[p], color=COL[p], capsize=3, lw=2.2, ms=7, markeredgecolor='white', markeredgewidth=0.6, elinewidth=1.2, label=LAB[p])
+    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir] (symmetric)", fontsize=14)
+    ax.set_ylabel("throughput $Q$ [veh/h]", fontsize=14)
+    ax.legend(fontsize=10.5, framealpha=0.92, loc='lower right'); ax.grid(alpha=0.35, lw=0.6)
+    ax.tick_params(axis='both', labelsize=12)
     fig.tight_layout()
     for e in ("pdf", "png"):
         fig.savefig(f"{FIGOUT}/fig_baseline_throughput.{e}", dpi=300)
     plt.close(fig)
     # waiting
-    fig, ax = plt.subplots(figsize=(5.0, 3.4))
+    fig, ax = plt.subplots(figsize=(5.6, 3.9))
     data = agg(1)
     for p in POLS:
         x, m, e = data[p]
-        ax.errorbar(x, m, yerr=e, fmt=MRK[p], color=COL[p], capsize=3, lw=1.4, ms=5, label=LAB[p])
-    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir] (symmetric)")
-    ax.set_ylabel("average waiting time [s]")
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+        ax.errorbar(x, m, yerr=e, fmt=MRK[p], color=COL[p], capsize=3, lw=2.2, ms=7, markeredgecolor='white', markeredgewidth=0.6, elinewidth=1.2, label=LAB[p])
+    ax.set_xlabel("arrival rate $\\lambda$ [veh/s/dir] (symmetric)", fontsize=14)
+    ax.set_ylabel("average waiting time [s]", fontsize=14)
+    ax.legend(fontsize=11, framealpha=0.9, loc='best'); ax.grid(alpha=0.35, lw=0.6)
+    ax.tick_params(axis='both', labelsize=12)
     fig.tight_layout()
     for e in ("pdf", "png"):
         fig.savefig(f"{FIGOUT}/fig_baseline_waiting.{e}", dpi=300)

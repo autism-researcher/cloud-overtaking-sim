@@ -19,7 +19,7 @@ from cloud_overtaking_sim import Cfg, simulate
 
 Cfg.dt = 0.1; Cfg.T_warm = 60.0; Cfg.T_sim = 600.0
 TOTAL = 0.40                     # total demand (sum of both directions) [veh/s]
-SEEDS = [1, 2, 3]
+SEEDS = [1,2,3,4,5]
 SHARES_ALL = [0.50, 0.60, 0.70, 0.80, 0.90, 0.95]
 POLS = ["base", "signal", "cloud"]
 LAB = {"base": "Decentralized bridge", "signal": "Fixed-time signal",
@@ -65,17 +65,18 @@ def compute(shares):
 
 def plot():
     cache = load_cache()
-    fig, ax = plt.subplots(figsize=(5.0, 3.4))
+    fig, ax = plt.subplots(figsize=(5.6, 3.9))
     for p in POLS:
         x, m, e = [], [], []
         for sh in SHARES_ALL:
             vals = [cache[(sh, p, s)] for s in SEEDS if (sh, p, s) in cache]
             if len(vals) == len(SEEDS):
                 x.append(sh * 100); m.append(np.mean(vals)); e.append(np.std(vals))
-        ax.errorbar(x, m, yerr=e, fmt=MRK[p], color=COL[p], capsize=3, lw=1.4, ms=5, label=LAB[p])
-    ax.set_xlabel("heavy-direction share of demand [%] (total fixed at 0.40 veh/s)")
-    ax.set_ylabel("total throughput $Q$ [veh/h]")
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+        ax.errorbar(x, m, yerr=e, fmt=MRK[p], color=COL[p], capsize=3, lw=2.2, ms=7, markeredgecolor='white', markeredgewidth=0.6, elinewidth=1.2, label=LAB[p])
+    ax.set_xlabel("heavy-direction share of demand [%] (total fixed at 0.40 veh/s)", fontsize=14)
+    ax.set_ylabel("total throughput $Q$ [veh/h]", fontsize=14)
+    ax.legend(fontsize=11, framealpha=0.9, loc='best'); ax.grid(alpha=0.35, lw=0.6)
+    ax.tick_params(axis='both', labelsize=12)
     fig.tight_layout()
     for e in ("pdf", "png"):
         fig.savefig(f"{FIGOUT}/fig_asym_throughput.{e}", dpi=300)
